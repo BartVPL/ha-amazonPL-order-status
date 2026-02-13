@@ -1,3 +1,5 @@
+[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz/)
+
 # ha-amazonPL-order-status
 
 Home Assistant custom integration that tracks Amazon delivery/order statuses by reading notification emails via IMAP.
