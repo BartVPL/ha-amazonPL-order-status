@@ -1,12 +1,12 @@
 {
   "domain": "amazon_order_status",
   "name": "Amazon Order Status (PL/EN)",
-  "codeowners": ["BartVPL"],
+  "codeowners": ["@BartVPL"],
   "config_flow": true,
   "documentation": "https://github.com/BartVPL/ha-amazonPL-order-status",
   "issue_tracker": "https://github.com/BartVPL/ha-amazonPL-order-status/issues",
   "iot_class": "cloud_polling",
   "requirements": ["beautifulsoup4==4.12.3"],
+  "loggers": ["custom_components.amazon_order_status"],
   "version": "1.2.1"
 }
-
