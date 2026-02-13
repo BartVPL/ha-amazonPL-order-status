@@ -1,11 +1,11 @@
 {
   "domain": "amazon_order_status",
-  "name": "Amazon Order Status",
-  "codeowners": ["@koconnorgit"],
+  "name": "Amazon Order Status (PL/EN)",
+  "codeowners": ["BartVPL"],
   "config_flow": true,
-  "documentation": "https://github.com/koconnorgit/ha-amazon-order-status",
-  "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/koconnorgit/ha-amazon-order-status/issues",
-  "requirements": ["beautifulsoup4"],
-  "version": "1.1.0"
+  "documentation": "https://github.com/BartVPL/ha-amazonPL-order-status",
+  "issue_tracker": "https://github.com/BartVPL/ha-amazonPL-order-status/issues",
+  "iot_class": "cloud_polling",
+  "requirements": ["beautifulsoup4==4.12.3"],
+  "version": "1.2.0"
 }
