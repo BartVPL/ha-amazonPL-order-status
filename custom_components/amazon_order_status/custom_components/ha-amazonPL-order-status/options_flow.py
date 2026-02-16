@@ -25,7 +25,7 @@ class AmazonOrderStatusOptionsFlow(config_entries.OptionsFlow):
             )
 
             # ✅ poprawne pobranie coordinatora
-            coordinator = self.hass.data.get(DOMAIN, {}).get("coordinator")
+            coordinator = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id)
 
             if coordinator:
                 if "delivered_retention_days" in user_input and hasattr(coordinator, "async_set_retention_days"):
@@ -67,3 +67,4 @@ class AmazonOrderStatusOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=schema,
         )
+
