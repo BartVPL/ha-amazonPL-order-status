@@ -1,36 +1,27 @@
 """Amazon Orders sensors."""
 
 import logging
-from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.util.dt import as_local
 
+from .const import DOMAIN
 from .coordinator import AmazonOrdersCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-
-# ======================================================
-# OBSŁUGIWANE STATUSY
-# ======================================================
-
+# Statusy które realnie występują w danych z coordinatora
 STATUSES = [
     "Ordered",
     "Shipped",
     "Out for delivery",
     "Ready for pickup",
     "Delivery attempt",
-    "Picked up",
     "Delivered",
 ]
 
-
-# ======================================================
-# SETUP
-# ======================================================
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -38,22 +29,13 @@ async def async_setup_entry(
     async_add_entities,
 ):
     """Set up Amazon Order Status sensors."""
+    coordinator: AmazonOrdersCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    coordinator: AmazonOrdersCoordinator = hass.data["amazon_order_status"][entry.entry_id]
-
-    sensors = [
-        AmazonOrderStatusSensor(coordinator, status)
-        for status in STATUSES
-    ]
-
+    sensors = [AmazonOrderStatusSensor(coordinator, status) for status in STATUSES]
     sensors.append(AmazonOrdersLastUpdatedSensor(coordinator))
 
     async_add_entities(sensors)
 
-
-# ======================================================
-# STATUS SENSOR
-# ======================================================
 
 class AmazonOrderStatusSensor(CoordinatorEntity, SensorEntity):
     """Sensor representing Amazon orders in a specific status."""
@@ -77,22 +59,14 @@ class AmazonOrderStatusSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self):
         """Return order details for this status."""
         orders = self._orders_for_status()
-
-        return {
-            "order_count": len(orders),
-            "orders": orders,
-        }
-
-    # ==================================================
+        return {"order_count": len(orders), "orders": orders}
 
     def _orders_for_status(self) -> list[dict]:
         """Return orders matching this sensor's status."""
-
         if not self.coordinator.data:
             return []
 
         results = []
-
         for data in self.coordinator.data:
             if data.get("status") != self.status:
                 continue
@@ -107,20 +81,14 @@ class AmazonOrderStatusSensor(CoordinatorEntity, SensorEntity):
                     "updated": data.get("updated"),
                 }
             )
-
         return results
 
-
-# ======================================================
-# LAST UPDATED SENSOR
-# ======================================================
 
 class AmazonOrdersLastUpdatedSensor(CoordinatorEntity, SensorEntity):
     """Sensor showing when Amazon orders were last updated."""
 
     def __init__(self, coordinator: AmazonOrdersCoordinator):
         super().__init__(coordinator)
-
         self._attr_unique_id = "amazon_orders_last_updated"
         self._attr_name = "Amazon Orders Last Updated"
         self._attr_icon = "mdi:clock-check-outline"
@@ -130,5 +98,4 @@ class AmazonOrdersLastUpdatedSensor(CoordinatorEntity, SensorEntity):
         """Return timestamp of last update."""
         if not getattr(self.coordinator, "last_check", None):
             return None
-
         return as_local(self.coordinator.last_check)
