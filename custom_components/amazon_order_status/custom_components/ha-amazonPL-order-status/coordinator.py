@@ -233,7 +233,7 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
             return None
 
         product = m.group(1).strip()
-        return product[:50]
+        return product[:100]
 
     # ---------------------------------------------------------
     # PRICE
@@ -262,3 +262,4 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
 
     async def async_set_mark_as_read(self, value: bool):
         self._mark_as_read = value
+
