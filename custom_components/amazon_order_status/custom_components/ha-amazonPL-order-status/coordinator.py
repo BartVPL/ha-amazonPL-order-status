@@ -1,12 +1,10 @@
 import imaplib
 import re
-import html
 import logging
 from datetime import datetime, timedelta, timezone
 from email.header import decode_header
 from email import message_from_bytes
 
-from bs4 import BeautifulSoup
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import CONF_MARK_AS_READ
@@ -14,18 +12,31 @@ from .const import CONF_MARK_AS_READ
 _LOGGER = logging.getLogger(__name__)
 
 
+# =========================================================
+# STATUS MAP
+# =========================================================
+
 STATUS_MAP = {
-    "ordered": ["zamówione", "ordered", "dziękujemy za złożenie zamówienia"],
-    "shipped": ["wysłane", "shipped"],
+    "ordered": [
+        "zamówione",
+        "zamówienie",
+        "order",
+        "dziękujemy za złożenie zamówienia",
+    ],
+    "shipped": [
+        "wysłane",
+        "wysłano",
+        "shipped",
+    ],
     "out_for_delivery": [
         "przekazano do doręczenia",
+        "w doręczeniu",
         "out for delivery",
-        "kurier już jedzie",
     ],
     "delivery_attempt": [
         "próba dostarczenia",
+        "podjęto próbę",
         "delivery attempt",
-        "podjęto próbę dostarczenia",
     ],
     "ready_for_pickup": [
         "gotowa do odbioru",
@@ -33,13 +44,20 @@ STATUS_MAP = {
     ],
     "delivered": [
         "dostarczona",
-        "delivered",
+        "doręczona",
         "odebrano",
+        "delivered",
     ],
 }
 
-ORDER_ID_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
 
+ORDER_ID_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
+PRICE_RE = re.compile(r"(\d+[.,]\d{2})\s?zł", re.I)
+
+
+# =========================================================
+# COORDINATOR
+# =========================================================
 
 class AmazonOrdersCoordinator(DataUpdateCoordinator):
 
@@ -54,22 +72,24 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self._orders = {}
         self._mark_as_read = entry.options.get(CONF_MARK_AS_READ, True)
-        self.delivered_retention_days = entry.options.get(
-            "delivered_retention_days", 30
-        )
+        self.delivered_retention_days = entry.options.get("delivered_retention_days", 30)
         self.last_check = None
+
+    # =========================================================
 
     async def _async_update_data(self):
         now = datetime.now(timezone.utc)
 
         await self.hass.async_add_executor_job(
-            self._fetch_and_parse_emails, self.last_check, now
+            self._fetch_and_parse_emails,
+            self.last_check,
+            now,
         )
 
         self.last_check = now
         return list(self._orders.values())
 
-    # -----------------------------------------------------
+    # =========================================================
 
     def _fetch_and_parse_emails(self, last_check, now):
 
@@ -90,6 +110,7 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
             return
 
         for num in data[0].split():
+
             typ, msg_data = mail.fetch(num, "(RFC822)")
             if typ != "OK":
                 continue
@@ -98,36 +119,33 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
 
             subject = self._decode(msg.get("Subject", ""))
             body = self._get_text(msg)
-            html_body = self._get_html(msg)
 
-            combined = f"{subject}\n{body}".lower()
+            _LOGGER.debug("Amazon mail subject: %s", subject)
 
-            status = self._detect_status(subject.lower())
+            status = self._detect_status(subject)
             if not status:
                 continue
 
-            order_ids = ORDER_ID_RE.findall(combined)
+            order_ids = ORDER_ID_RE.findall(subject + body)
             if not order_ids:
                 continue
 
             product = self._extract_product(body)
             price = self._extract_price(body)
-            seller = "Amazon"
-            tracking = self._extract_tracking(html_body)
 
             for oid in order_ids:
 
-                # usuń zamówienie jeśli delivered
-                if status == "delivered":
+                if status.lower() == "delivered":
                     self._orders.pop(oid, None)
                     continue
 
                 self._orders[oid] = {
                     "status": status,
                     "product": product,
-                    "seller": seller,
                     "price": price,
-                    "tracking": tracking,
+                    "seller": "Amazon",
+                    "subject": subject,
+                    "tracking": None,
                     "updated": datetime.now(timezone.utc).isoformat(),
                 }
 
@@ -136,24 +154,50 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
 
         mail.logout()
 
-    # -----------------------------------------------------
-    # STATUS
-    # -----------------------------------------------------
+    # =========================================================
+    # STATUS DETECTION
+    # =========================================================
 
     def _detect_status(self, subject):
 
-        subject = subject.lower()
+        if not subject:
+            return None
 
+        subject_lower = subject.lower()
+
+        # 1️⃣ prefix before colon
+        m = re.match(r"(.+?):", subject_lower)
+        if m:
+            prefix = m.group(1).strip()
+
+            for status, words in STATUS_MAP.items():
+                for word in words:
+                    if word in prefix:
+                        return self._format(status)
+
+        # 2️⃣ fallback full subject scan
         for status, words in STATUS_MAP.items():
-            for w in words:
-                if w in subject:
-                    return status
+            for word in words:
+                if word in subject_lower:
+                    return self._format(status)
 
         return None
 
-    # -----------------------------------------------------
-    # DECODE
-    # -----------------------------------------------------
+    # =========================================================
+
+    def _format(self, key):
+        return {
+            "ordered": "Ordered",
+            "shipped": "Shipped",
+            "out_for_delivery": "Out for delivery",
+            "delivery_attempt": "Delivery attempt",
+            "ready_for_pickup": "Ready for pickup",
+            "delivered": "Delivered",
+        }.get(key)
+
+    # =========================================================
+    # TEXT EXTRACTION
+    # =========================================================
 
     def _decode(self, value):
         decoded = ""
@@ -164,9 +208,7 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
                 decoded += part
         return decoded
 
-    # -----------------------------------------------------
-    # BODY PARSING
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
 
     def _get_text(self, msg):
         if msg.is_multipart():
@@ -177,48 +219,40 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
                         return payload.decode(errors="ignore")
         return ""
 
-    def _get_html(self, msg):
-        if msg.is_multipart():
-            for part in msg.walk():
-                if part.get_content_type() == "text/html":
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        return payload.decode(errors="ignore")
-        return ""
-
-    # -----------------------------------------------------
-    # EXTRACTION
-    # -----------------------------------------------------
+    # ---------------------------------------------------------
+    # PRODUCT
+    # ---------------------------------------------------------
 
     def _extract_product(self, body):
 
-        m = re.search(r"\*\s*(.+)", body)
-        if m:
-            return m.group(1).strip()[:50]
+        if not body:
+            return None
 
-        return None
+        m = re.search(r"\*\s*(.+)", body)
+        if not m:
+            return None
+
+        product = m.group(1).strip()
+        return product[:50]
+
+    # ---------------------------------------------------------
+    # PRICE
+    # ---------------------------------------------------------
 
     def _extract_price(self, body):
 
-        m = re.search(r"([\d,.]+)\s*PLN", body, re.I)
+        if not body:
+            return None
+
+        m = PRICE_RE.search(body)
         if m:
-            return f"{m.group(1)} PLN"
+            return m.group(1) + " zł"
 
         return None
 
-    def _extract_tracking(self, html_body):
-        soup = BeautifulSoup(html_body, "html.parser")
-
-        for link in soup.find_all("a", href=True):
-            href = html.unescape(link["href"])
-            if "progress-tracker" in href:
-                return href
-
-        return None
-
-    # -----------------------------------------------------
-    # OPTIONS UPDATE
-    # -----------------------------------------------------
+    # =========================================================
+    # OPTIONS FLOW SUPPORT
+    # =========================================================
 
     async def async_set_retention_days(self, days: int):
         self.delivered_retention_days = days
