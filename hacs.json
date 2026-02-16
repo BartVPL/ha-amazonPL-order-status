@@ -1,9 +1,11 @@
 {
   "name": "ha-amazonPL-order-status",
+  "filename": "custom_components/amazon_order_status",
   "content_in_root": true,
   "render_readme": true,
   "domains": ["sensor"],
   "homeassistant": "2026.1.0",
   "hacs": "2.0.0"
 }
+
 
