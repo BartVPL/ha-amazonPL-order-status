@@ -1,4 +1,8 @@
-[![HACS](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://hacs.xyz/)
+![HACS](https://img.shields.io/badge/HACS-Custom-orange)
+![Version](https://img.shields.io/github/v/release/BartVPL/ha-amazonPL-order-status)
+![Maintenance](https://img.shields.io/badge/Maintained-Yes-brightgreen)
+![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026%2B-blue)
+
 
 # ha-amazonPL-order-status
 
