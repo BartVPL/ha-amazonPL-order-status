@@ -1,168 +1,142 @@
-"""Amazon Orders Data Coordinator."""
-
-from __future__ import annotations
-
 import imaplib
-import logging
+import email
 import re
+import html
+import logging
 from datetime import datetime, timedelta, timezone
-from email import message_from_bytes
 from email.header import decode_header
-
-from homeassistant.core import HomeAssistant
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from email import message_from_bytes
 from bs4 import BeautifulSoup
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+
+from .const import DOMAIN, CONF_MARK_AS_READ
 
 _LOGGER = logging.getLogger(__name__)
 
-ORDER_REGEX = re.compile(r"[0-9]{3}\-[0-9]{7}\-[0-9]{7}", re.IGNORECASE)
-
-# =====================================================
-# STATUS DETEKCJA
-# =====================================================
-
-STATUS_PATTERNS = [
-    (r"zamówion", "Ordered"),
-    (r"dziękujemy za złożenie zamówienia", "Ordered"),
-
-    (r"wysłan", "Shipped"),
-    (r"nadano", "Shipped"),
-
-    (r"przekazan.*do doręczenia", "Out for delivery"),
-    (r"wydan.*do doręczenia", "Out for delivery"),
-
-    (r"próba dostarczenia", "Delivery attempt"),
-    (r"podjęto próbę dostarczenia", "Delivery attempt"),
-
-    (r"odebran", "Delivered"),
-    (r"dostarczon", "Delivered"),
-    (r"doręczon", "Delivered"),
-
-    (r"gotowa do odbioru", "Ready for pickup"),
-    (r"przesyłka gotowa do odbioru", "Ready for pickup"),
-]
+STATUS_MAP = {
+    "zamówione": "Ordered",
+    "wysłane": "Shipped",
+    "przekazana do doręczenia": "Out for delivery",
+    "przekazano do doręczenia": "Out for delivery",
+    "w drodze": "Shipped",
+    "odebrana": "Delivered",
+    "odebrano": "Delivered",
+    "gotowa do odbioru": "Ready for pickup",
+    "delivery attempt": "Delivery attempt",
+}
 
 
-def detect_status(text: str) -> str | None:
-    text = text.lower()
+ORDER_ID_RE = re.compile(r"\d{3}-\d{7}-\d{7}")
 
-    for pattern, status in STATUS_PATTERNS:
-        if re.search(pattern, text):
-            return status
-
-    return None
-
-
-# =====================================================
-# COORDINATOR
-# =====================================================
 
 class AmazonOrdersCoordinator(DataUpdateCoordinator):
-    """Coordinator."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
-        self.hass = hass
-        self.entry = entry
-
-        interval_minutes = entry.options.get("update_interval", 5)
-
+    def __init__(self, hass, entry):
         super().__init__(
             hass,
             _LOGGER,
-            name="Amazon Order Status",
-            update_interval=timedelta(minutes=interval_minutes),
+            name="Amazon Orders",
+            update_interval=timedelta(minutes=entry.options.get("update_interval", 5)),
         )
 
-    # =====================================================
-    # GŁÓWNY UPDATE
-    # =====================================================
+        self.entry = entry
+        self._orders = {}
+        self._mark_as_read = entry.options.get(CONF_MARK_AS_READ, True)
+        self.delivered_retention_days = entry.options.get(
+            "delivered_retention_days", 30
+        )
+        self.last_check = None
 
     async def _async_update_data(self):
-        return await self.hass.async_add_executor_job(self._fetch_emails)
+        now = datetime.now(timezone.utc)
+        await self.hass.async_add_executor_job(
+            self._fetch_and_parse_emails, self.last_check, now
+        )
+        self.last_check = now
+        return list(self._orders.values())
 
-    # =====================================================
-    # IMAP FETCH
-    # =====================================================
+    # -----------------------------------------------------
 
-    def _fetch_emails(self):
+    def _fetch_and_parse_emails(self, last_check, now):
+
         email_addr = self.entry.data["email"]
         password = self.entry.data["password"]
         imap_server = self.entry.data["imap_server"]
-        port = self.entry.data.get("imap_port", 993)
 
-        orders = {}
+        mail = imaplib.IMAP4_SSL(imap_server)
+        mail.login(email_addr, password)
+        mail.select("INBOX")
 
-        try:
-            mail = imaplib.IMAP4_SSL(imap_server, port)
-            mail.login(email_addr, password)
-            mail.select("INBOX")
+        since = last_check or (now - timedelta(days=30))
+        since_date = since.strftime("%d-%b-%Y")
 
-            typ, data = mail.search(None, "ALL")
-            if typ != "OK":
-                return []
-
-            for num in data[0].split():
-                typ, msg_data = mail.fetch(num, "(RFC822)")
-                if typ != "OK":
-                    continue
-
-                msg = message_from_bytes(msg_data[0][1])
-
-                subject = self._decode(msg.get("Subject", ""))
-                body = self._get_text(msg)
-                html = self._get_html(msg)
-
-                combined = f"{subject} {body} {html}"
-
-                status = detect_status(combined)
-
-                if not status:
-                    continue
-
-                # AUTO USUWANIE DOSTARCZONYCH
-                if status == "Delivered":
-                    continue
-
-                order_ids = ORDER_REGEX.findall(combined)
-                if not order_ids:
-                    continue
-
-                product = self._extract_product(combined)
-                seller = self._extract_seller(combined)
-                tracking = self._extract_tracking(html)
-
-                for oid in order_ids:
-                    orders[oid] = {
-                        "status": status,
-                        "product": product,
-                        "seller": seller,
-                        "tracking": tracking,
-                        "updated": datetime.now(timezone.utc).isoformat(),
-                    }
-
+        typ, data = mail.search(None, f'(SINCE "{since_date}")')
+        if typ != "OK":
             mail.logout()
+            return
 
-        except Exception as e:
-            _LOGGER.error("Amazon mail fetch error: %s", e)
-            return []
+        for num in data[0].split():
+            typ, msg_data = mail.fetch(num, "(RFC822)")
+            if typ != "OK":
+                continue
 
-        # KLUCZOWE: NADPISUJEMY LISTĘ (SYNC)
-        return list(orders.values())
+            msg = message_from_bytes(msg_data[0][1])
 
-    # =====================================================
-    # PARSING HELPERS
-    # =====================================================
+            subject = self._decode(msg.get("Subject", ""))
+            body = self._get_text(msg)
+            html_body = self._get_html(msg)
+            combined = f"{subject}\n{body}\n{html_body}".lower()
+
+            status = self._detect_status(combined)
+            if not status:
+                continue
+
+            order_ids = ORDER_ID_RE.findall(combined)
+            if not order_ids:
+                continue
+
+            product = self._extract_product(body, html_body, subject)
+            seller = self._extract_seller(body + html_body)
+            tracking = self._extract_tracking(html_body)
+
+            for oid in order_ids:
+                if status.lower() == "delivered":
+                    self._orders.pop(oid, None)
+                    continue
+
+                self._orders[oid] = {
+                    "status": status,
+                    "product": product,
+                    "seller": seller,
+                    "tracking": tracking,
+                    "updated": datetime.now(timezone.utc).isoformat(),
+                }
+
+            if self._mark_as_read:
+                mail.store(num, "+FLAGS", "\\Seen")
+
+        mail.logout()
+
+    # -----------------------------------------------------
+
+    def _detect_status(self, text):
+        for key, val in STATUS_MAP.items():
+            if key in text:
+                return val
+        return None
+
+    # -----------------------------------------------------
 
     def _decode(self, value):
-        parts = decode_header(value)
-        text = ""
-        for part, enc in parts:
+        decoded = ""
+        for part, enc in decode_header(value):
             if isinstance(part, bytes):
-                text += part.decode(enc or "utf-8", errors="ignore")
+                decoded += part.decode(enc or "utf-8", errors="ignore")
             else:
-                text += part
-        return text
+                decoded += part
+        return decoded
+
+    # -----------------------------------------------------
 
     def _get_text(self, msg):
         if msg.is_multipart():
@@ -182,38 +156,54 @@ class AmazonOrdersCoordinator(DataUpdateCoordinator):
                         return payload.decode(errors="ignore")
         return ""
 
-    # =====================================================
-    # EKSTRAKCJA
-    # =====================================================
+    # -----------------------------------------------------
+    # EXTRACTION
+    # -----------------------------------------------------
 
-    def _extract_product(self, text):
-        soup = BeautifulSoup(text, "html.parser")
-        links = soup.find_all("a")
-        for a in links:
-            if a.text and len(a.text.strip()) > 5:
-                return a.text.strip()
+    def _extract_product(self, body, html_body, subject):
+
+        # 1️⃣ subject: "Wysłane: Produkt"
+        m = re.search(r":\s*[„\"]?(.+?)[”\"]?$", subject)
+        if m:
+            return m.group(1).strip()
+
+        # 2️⃣ tekst maila lista produktów "* produkt"
+        m = re.search(r"\*\s*(.+)", body)
+        if m:
+            return m.group(1).strip()
+
+        # 3️⃣ html fallback
+        soup = BeautifulSoup(html_body, "html.parser")
+        for link in soup.find_all("a"):
+            text = link.get_text(strip=True)
+            if len(text) > 5 and "amazon" not in text.lower():
+                return text
+
         return None
+
+    # -----------------------------------------------------
 
     def _extract_seller(self, text):
-        m = re.search(r"(Sprzedawca|Sold by)[^\n:]*:\s*(.+)", text, re.I)
+        m = re.search(r"(sprzedawca|sold by)[^\n:]*:\s*(.+)", text, re.I)
         return m.group(2).strip() if m else None
 
-    def _extract_tracking(self, html):
-        soup = BeautifulSoup(html, "html.parser")
+    # -----------------------------------------------------
+
+    def _extract_tracking(self, html_body):
+        soup = BeautifulSoup(html_body, "html.parser")
         for link in soup.find_all("a", href=True):
-            if "track" in link["href"] or "tracking" in link["href"]:
-                return link["href"]
+            href = html.unescape(link["href"])
+            if "progress-tracker" in href:
+                return href
         return None
 
-    # =====================================================
-    # OPTIONS SUPPORT (żeby options_flow nie wywalał błędów)
-    # =====================================================
+    # -----------------------------------------------------
 
     async def async_set_retention_days(self, days: int):
-        return
+        self.delivered_retention_days = days
 
     async def async_update_interval(self, minutes: int):
         self.update_interval = timedelta(minutes=minutes)
 
     async def async_set_mark_as_read(self, value: bool):
-        return
+        self._mark_as_read = value
