@@ -14,6 +14,7 @@ class AmazonOrderStatusOptionsFlow(config_entries.OptionsFlow):
         self._config_entry = config_entry
 
     async def async_step_init(self, user_input=None):
+
         if user_input is not None:
             new_options = dict(self._config_entry.options)
             new_options.update(user_input)
@@ -23,7 +24,8 @@ class AmazonOrderStatusOptionsFlow(config_entries.OptionsFlow):
                 options=new_options,
             )
 
-            coordinator = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id)
+            # ✅ poprawne pobranie coordinatora
+            coordinator = self.hass.data.get(DOMAIN, {}).get("coordinator")
 
             if coordinator:
                 if "delivered_retention_days" in user_input and hasattr(coordinator, "async_set_retention_days"):
@@ -36,7 +38,6 @@ class AmazonOrderStatusOptionsFlow(config_entries.OptionsFlow):
                     if hasattr(coordinator, "async_set_mark_as_read"):
                         await coordinator.async_set_mark_as_read(user_input["mark_as_read"])
                     else:
-                        # fallback, jeśli coordinator ma tylko pole
                         setattr(coordinator, "_mark_as_read", user_input["mark_as_read"])
 
             return self.async_create_entry(title="", data=user_input)
@@ -49,10 +50,12 @@ class AmazonOrderStatusOptionsFlow(config_entries.OptionsFlow):
                     "delivered_retention_days",
                     default=options.get("delivered_retention_days", 30),
                 ): vol.All(int, vol.Range(min=1, max=365)),
+
                 vol.Required(
                     "update_interval",
                     default=options.get("update_interval", 5),
                 ): vol.All(int, vol.Range(min=1, max=120)),
+
                 vol.Required(
                     "mark_as_read",
                     default=options.get("mark_as_read", True),
