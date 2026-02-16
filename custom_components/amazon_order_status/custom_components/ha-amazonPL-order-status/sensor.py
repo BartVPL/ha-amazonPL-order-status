@@ -12,7 +12,8 @@ from .coordinator import AmazonOrdersCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Statusy które realnie występują w danych z coordinatora
+
+# statusy jakie widzi użytkownik w HA
 STATUSES = [
     "Ordered",
     "Shipped",
@@ -44,22 +45,31 @@ class AmazonOrderStatusSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
 
         self.status = status
-        slug = status.lower().replace(" ", "_")
+        self.slug = status.lower().replace(" ", "_")
 
-        self._attr_unique_id = f"amazon_orders_{slug}"
+        self._attr_unique_id = f"amazon_orders_{self.slug}"
         self._attr_name = f"Amazon Orders {status}"
         self._attr_icon = "mdi:package-variant"
+
+    # ------------------------
 
     @property
     def native_value(self) -> int:
         """Return number of orders in this status."""
         return len(self._orders_for_status())
 
+    # ------------------------
+
     @property
     def extra_state_attributes(self):
         """Return order details for this status."""
         orders = self._orders_for_status()
-        return {"order_count": len(orders), "orders": orders}
+        return {
+            "order_count": len(orders),
+            "orders": orders,
+        }
+
+    # ------------------------
 
     def _orders_for_status(self) -> list[dict]:
         """Return orders matching this sensor's status."""
@@ -67,21 +77,27 @@ class AmazonOrderStatusSensor(CoordinatorEntity, SensorEntity):
             return []
 
         results = []
+
         for data in self.coordinator.data:
-            if data.get("status") != self.status:
+            if str(data.get("status", "")).lower() != self.slug:
                 continue
 
             results.append(
                 {
-                    "status": data.get("status"),
+                    "status": str(data.get("status", "")).replace("_", " ").title(),
                     "product": data.get("product"),
                     "seller": data.get("seller"),
+                    "price": data.get("price"),
                     "subject": data.get("subject"),
                     "tracking": data.get("tracking"),
                     "updated": data.get("updated"),
                 }
             )
+
         return results
+
+
+# =========================================================
 
 
 class AmazonOrdersLastUpdatedSensor(CoordinatorEntity, SensorEntity):
@@ -98,4 +114,5 @@ class AmazonOrdersLastUpdatedSensor(CoordinatorEntity, SensorEntity):
         """Return timestamp of last update."""
         if not getattr(self.coordinator, "last_check", None):
             return None
+
         return as_local(self.coordinator.last_check)
